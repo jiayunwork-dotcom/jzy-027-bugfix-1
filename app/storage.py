@@ -64,7 +64,7 @@ class SpanStore:
         record = {
             "name": name,
             "span": float(span),
-            "height_difference": abs(float(height_difference)),
+            "height_difference": float(height_difference),
             "w": float(w),
         }
         data[name] = {k: record[k] for k in ("span", "height_difference", "w")}

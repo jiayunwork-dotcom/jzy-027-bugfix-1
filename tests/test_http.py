@@ -88,6 +88,51 @@ def test_named_span_calibrate_only_needs_measurement(client):
     assert len(out["points"]) == 21  # 默认 21 点
 
 
+@pytest.mark.parametrize("h", [-18.0, 18.0, 0.0])
+def test_named_span_matches_anonymous_pointwise(client, h):
+    """点名存档算出的曲线，与把同一份几何直接交进去算的，逐点一致。
+
+    回归钉：存档曾把负高差存成 |h|，导致下坡档点名标定 / 正算的最低点
+    与整条剖面关于跨中镜像。负高差一档必须钉死；正高差与等高行为不变。
+    """
+    L, w, H, x_m = 200.0, 10.0, 2000.0, 120.0
+    client.post("/api/spans", json={
+        "name": "对照档", "span": L, "height_difference": h, "w": w})
+    # 存档必须原样保留高差符号
+    assert client.get("/api/spans/对照档").get_json()["height_difference"] == h
+
+    # ---- 标定：同一测量，点名 vs 匿名 ----
+    sag = Catenary(L, h, H / w).sag(x_m)
+    named = client.post("/api/spans/对照档/calibrate",
+                        json={"sag": sag, "x": x_m}).get_json()
+    anon = client.post("/api/calibrate", json={
+        "span": L, "height_difference": h, "w": w, "sag": sag, "x": x_m}).get_json()
+    assert named["vertex_x"] == pytest.approx(anon["vertex_x"], rel=1e-12)
+    assert named["H"] == pytest.approx(anon["H"], rel=1e-12)
+    assert named["length"] == pytest.approx(anon["length"], rel=1e-12)
+    for p_named, p_anon in zip(named["points"], anon["points"]):
+        assert p_named["x"] == p_anon["x"]
+        assert p_named["y"] == pytest.approx(p_anon["y"], rel=1e-12)
+        assert p_named["chord_y"] == pytest.approx(p_anon["chord_y"], rel=1e-12)
+        assert p_named["sag"] == pytest.approx(p_anon["sag"], rel=1e-12)
+
+    # ---- 正算：同一 H，点名 vs 匿名 ----
+    named_fwd = client.post("/api/spans/对照档/forward", json={"H": H}).get_json()
+    anon_fwd = client.post("/api/forward", json={
+        "H": H, "w": w, "span": L, "height_difference": h}).get_json()
+    assert named_fwd["vertex_x"] == pytest.approx(anon_fwd["vertex_x"], rel=1e-12)
+    for p_named, p_anon in zip(named_fwd["points"], anon_fwd["points"]):
+        assert p_named["y"] == pytest.approx(p_anon["y"], rel=1e-12)
+
+    # ---- 最低点必须偏向地势低的一端（下坡档偏右，且不在跨中） ----
+    if h < 0:
+        assert named["vertex_x"] > L / 2.0
+    elif h > 0:
+        assert named["vertex_x"] < L / 2.0
+    else:
+        assert named["vertex_x"] == pytest.approx(L / 2.0)
+
+
 def test_calibrate_level_midspan_math(client):
     L, c, w = 100.0, 40.0, 9.81
     sag = c * (math.cosh(L / (2 * c)) - 1)
