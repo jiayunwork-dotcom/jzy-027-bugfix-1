@@ -102,6 +102,71 @@ def test_calibrate_level_midspan_math(client):
     assert out["closure"]["rel_error"] < 1e-12
 
 
+def _assert_curves_match(named: dict, anon: dict) -> None:
+    """点名存档算出来的整条曲线，与直交同一份几何的结果逐点一致。"""
+    for key in ("H", "c", "length", "vertex_x", "vertex_y", "height_difference"):
+        assert named[key] == pytest.approx(anon[key], rel=1e-10, abs=1e-10), key
+    assert len(named["points"]) == len(anon["points"])
+    for pn, pa in zip(named["points"], anon["points"]):
+        assert pn["x"] == pytest.approx(pa["x"], abs=1e-12)
+        for key in ("y", "chord_y", "sag"):
+            assert pn[key] == pytest.approx(pa[key], rel=1e-10, abs=1e-10), (
+                f"x={pn['x']:g} 处 {key} 左右翻转: 点名={pn[key]} 匿名={pa[key]}"
+            )
+
+
+@pytest.mark.parametrize("h", [-18.0, 0.0, 18.0])
+def test_named_span_matches_anonymous_pointwise(client, h):
+    """点名存档（尤其负高差下坡档）必须与匿名直交几何的结果逐点一致。
+
+    回归档：旧实现在登记时把 height_difference 取了 abs，负高差档经存档
+    后几何被左右镜像（最低点错偏向高端、整档取样高度翻面），而索长/张力
+    等只依赖 |h| 的标量仍对得上。
+    """
+    L, w, H = 200.0, 10.0, 2000.0  # c=200，可达（c_max≈1109）
+    r = client.post("/api/spans", json={
+        "name": "存档档", "span": L, "height_difference": h, "w": w})
+    assert r.status_code == 201, r.get_json()
+    # 高差符号必须原样存回，不能被 abs 抹掉
+    assert r.get_json()["height_difference"] == h
+    assert client.get("/api/spans/存档档").get_json()["height_difference"] == h
+
+    # ---- 正算：点名档 vs 匿名直交同一份几何 ----
+    f_named = client.post("/api/spans/存档档/forward", json={"H": H})
+    assert f_named.status_code == 200, f_named.get_json()
+    f_anon = client.post("/api/forward", json={
+        "H": H, "w": w, "span": L, "height_difference": h})
+    assert f_anon.status_code == 200, f_anon.get_json()
+    _assert_curves_match(f_named.get_json(), f_anon.get_json())
+
+    # ---- 标定：跨中偏右 x=110 处量弧垂，点名档只补测量 ----
+    xm = 110.0
+    sag = Catenary(L, h, H / w).sag(xm)
+    c_named = client.post("/api/spans/存档档/calibrate",
+                          json={"sag": sag, "x": xm})
+    assert c_named.status_code == 200, c_named.get_json()
+    c_anon = client.post("/api/calibrate", json={
+        "span": L, "height_difference": h, "w": w, "sag": sag, "x": xm})
+    assert c_anon.status_code == 200, c_anon.get_json()
+    named, anon = c_named.get_json(), c_anon.get_json()
+    _assert_curves_match(named, anon)
+    assert named["H"] == pytest.approx(H, rel=1e-9)
+    assert named["closure"]["passed"] is True
+
+    # 右端支座高度就是 h（符号没翻）
+    assert named["points"][-1]["y"] == pytest.approx(h, abs=1e-10)
+
+    # 最低点偏向地势低的一端：h=-18 右端低 -> 跨中偏右约 117m
+    if h < 0.0:
+        assert named["vertex_x"] > L / 2.0
+        assert named["vertex_x"] == pytest.approx(117.25, rel=1e-3)
+    elif h > 0.0:
+        assert named["vertex_x"] < L / 2.0
+        assert named["vertex_x"] == pytest.approx(L - 117.25, rel=1e-3)
+    else:
+        assert named["vertex_x"] == pytest.approx(L / 2.0, abs=1e-9)
+
+
 def test_forward_then_calibrate_roundtrip(client):
     body = {"H": 800.0, "w": 10.0, "span": 160.0, "height_difference": -6.0}
     r = client.post("/api/forward", json=body)

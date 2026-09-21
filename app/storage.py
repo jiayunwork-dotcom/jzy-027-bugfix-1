@@ -64,7 +64,10 @@ class SpanStore:
         record = {
             "name": name,
             "span": float(span),
-            "height_difference": abs(float(height_difference)),
+            # 高差符号必须原样保留：h<0 表示右端更低，取 abs 会把几何
+            # 左右镜像（最低点偏侧、整档取样高度全翻），而索长/张力等
+            # 只依赖 |h| 的标量又恰好不受影响，错了也不易从标量察觉。
+            "height_difference": float(height_difference),
             "w": float(w),
         }
         data[name] = {k: record[k] for k in ("span", "height_difference", "w")}
